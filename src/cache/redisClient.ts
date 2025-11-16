@@ -1,48 +1,29 @@
-// src/cache/redisClient.ts
+import Redis from 'ioredis'
 import { REDIS_URL } from '../config'
 
-let redis: any
-
-if (process.env.NODE_ENV === 'test') {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const RedisMock = require('ioredis-mock')
-  redis = new RedisMock()
-} else {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const IORedis = require('ioredis')
-  redis = new IORedis(REDIS_URL, {
-    lazyConnect: true,            // connect only when needed
-    maxRetriesPerRequest: 3,      // fail quickly
-    connectTimeout: 10_000,
-    enableReadyCheck: true,
-    enableOfflineQueue: false,    // keep disabled; we will avoid calling when not ready
-    retryStrategy(times: number) {
-      if (times >= 8) return null
-      return Math.min(1000 * Math.pow(2, times), 30_000)
+const redis = new Redis(REDIS_URL, {
+  tls: {},
+  enableReadyCheck: false,
+  maxRetriesPerRequest: 50,
+  retryStrategy(times) {
+    return Math.min(200 + times * 200, 2000)
+  },
+  reconnectOnError(err) {
+    if (!err) return false
+    const msg = err.message || ''
+    if (
+      msg.includes('ECONNRESET') ||
+      msg.includes('EPIPE') ||
+      msg.includes('ECONNREFUSED')
+    ) {
+      return true
     }
-  })
-}
+    return false
+  },
+})
 
-// lightweight logging - safe even if redis is mock
-if (redis && typeof redis.on === 'function') {
-  redis.on('error', (err: any) => {
-    // eslint-disable-next-line no-console
-    console.error('Redis error', err && err.message ? err.message : err)
-  })
-  redis.on('ready', () => {
-    // eslint-disable-next-line no-console
-    console.log('Redis ready')
-  })
-}
+redis.on('error', (err) => {
+  console.error('Redis error', err.message)
+})
 
 export default redis
-
-export async function closeRedis(): Promise<void> {
-  try {
-    if (!redis) return
-    if (typeof redis.quit === 'function') await redis.quit()
-    else if (typeof redis.disconnect === 'function') redis.disconnect()
-  } catch {
-    // ignore
-  }
-}
