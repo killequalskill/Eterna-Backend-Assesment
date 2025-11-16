@@ -1,0 +1,101 @@
+<!-- public/socket-demo.html -->
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Socket Demo - Meme Agg</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 16px; }
+      #snapshot, #updates { border: 1px solid #ddd; padding: 8px; margin-bottom: 12px; max-height: 300px; overflow:auto; }
+      button { margin-right: 8px; padding: 8px 12px; }
+      .token { padding: 6px 0; border-bottom: 1px solid #f3f3f3; }
+    </style>
+  </head>
+  <body>
+    <h2>Meme-Agg Socket Demo</h2>
+    <div>
+      <button id="connect">Connect WS</button>
+      <button id="subscribe" disabled>Subscribe</button>
+      <button id="aggregate" disabled>Trigger Aggregate (admin)</button>
+    </div>
+
+    <h3>Snapshot</h3>
+    <div id="snapshot">no snapshot yet</div>
+
+    <h3>Updates</h3>
+    <div id="updates">no updates yet</div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const connectBtn = document.getElementById('connect')
+      const subscribeBtn = document.getElementById('subscribe')
+      const aggregateBtn = document.getElementById('aggregate')
+      const snapshotDiv = document.getElementById('snapshot')
+      const updatesDiv = document.getElementById('updates')
+      let socket = null
+
+      connectBtn.onclick = () => {
+        if (socket) {
+          socket.disconnect()
+          socket = null
+          connectBtn.textContent = 'Connect WS'
+          subscribeBtn.disabled = true
+          aggregateBtn.disabled = true
+          snapshotDiv.innerText = 'disconnected'
+          updatesDiv.innerText = 'disconnected'
+          return
+        }
+        socket = io()
+        socket.on('connect', () => {
+          connectBtn.textContent = 'Disconnect'
+          subscribeBtn.disabled = false
+          aggregateBtn.disabled = false
+          snapshotDiv.innerText = 'connected, no snapshot yet'
+          updatesDiv.innerText = 'connected, no updates yet'
+        })
+        socket.on('snapshot', (data) => {
+          snapshotDiv.innerHTML = ''
+          if (!data || data.length === 0) {
+            snapshotDiv.innerText = 'empty snapshot'
+            return
+          }
+          data.forEach(t => {
+            const el = document.createElement('div')
+            el.className = 'token'
+            el.textContent = `${t.token_ticker || t.token_name || t.token_address} — price: ${t.price_sol} — vol: ${t.volume_sol}`
+            snapshotDiv.appendChild(el)
+          })
+        })
+        socket.on('token_updates', (updates) => {
+          if (!Array.isArray(updates)) return
+          updates.forEach(u => {
+            const el = document.createElement('div')
+            el.className = 'token'
+            el.textContent = `[${new Date().toLocaleTimeString()}] ${u.token_ticker || u.token_name || u.token_address} updated — price:${u.price_sol} vol:${u.volume_sol}`
+            updatesDiv.insertBefore(el, updatesDiv.firstChild)
+          })
+        })
+        socket.on('error', (e) => {
+          console.error('socket error', e)
+        })
+      }
+
+      subscribeBtn.onclick = () => {
+        if (!socket) return
+        // subscribe with some options; adjust limit/sort/period as needed
+        socket.emit('subscribe', { limit: 20, sortBy: 'volume', period: '24h' })
+      }
+
+      aggregateBtn.onclick = async () => {
+        // triggers admin aggregate endpoint; if ADMIN_KEY env set on server, provide 'x-admin-key' header
+        try {
+          const res = await fetch('/admin/aggregate', { method: 'POST' })
+          const json = await res.json()
+          alert('aggregate response: ' + JSON.stringify(json))
+        } catch (e) {
+          alert('aggregate failed: ' + e)
+        }
+      }
+    </script>
+  </body>
+</html>
