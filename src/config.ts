@@ -3,7 +3,7 @@ import dotenv from 'dotenv'
 dotenv.config()
 
 export const PORT = process.env.PORT ? Number(process.env.PORT) : 3000
-export const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379'
+export const REDIS_URL = 'redis://default:AVibAAIncDJlMmMwNjU3OTQ1N2Q0NGM2YjUwODA4MWEwZDU5OGI5NnAyMjI2ODM@stable-midge-22683.upstash.io:6379'
 export const CACHE_TTL_SECONDS = process.env.CACHE_TTL_SECONDS ? Number(process.env.CACHE_TTL_SECONDS) : 30
 export const AGGREGATOR_INTERVAL_SECONDS = process.env.AGGREGATOR_INTERVAL_SECONDS ? Number(process.env.AGGREGATOR_INTERVAL_SECONDS) : 20
 export const DEXSCREENER_MAX_CONCURRENCY = process.env.DEXSCREENER_MAX_CONCURRENCY ? Number(process.env.DEXSCREENER_MAX_CONCURRENCY) : 10

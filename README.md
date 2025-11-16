@@ -114,8 +114,8 @@ insomnia_collection.yaml
 ---
 
 ## Deployment
-Deploy to any free hosting (Render/Railway).  
-Will add public URL here.
+Deployed to Render, public URL is
+https://eterna-backend-assessment.onrender.com
 
 ---
 

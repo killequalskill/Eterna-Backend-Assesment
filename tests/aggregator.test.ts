@@ -1,10 +1,55 @@
 // tests/aggregator.test.ts
+jest.setTimeout(20000)
+
 import nock from 'nock'
+nock.disableNetConnect()
+
+// Mock redis/cache module BEFORE importing aggregator so the real client never connects.
+// Provide __esModule: true so `import redis from '../src/cache/redisClient'` receives the mock default.
+jest.mock('../src/cache/redisClient', () => {
+  // in-memory storage (string) to simulate Redis key value
+  let storedValue: string | null = null
+
+  // default client shape — matches code that calls redisClient.default.set / .get
+  const defaultClient = {
+    set: jest.fn(async (_key: string, value: string) => {
+      storedValue = value
+      return Promise.resolve('OK')
+    }),
+    get: jest.fn(async (_key: string) => {
+      return Promise.resolve(storedValue)
+    }),
+    quit: jest.fn(async () => Promise.resolve()),
+    disconnect: jest.fn(() => undefined),
+  }
+
+  // Also export helper functions in case other modules import them directly
+  const saveTokensToCache = jest.fn(async (tokens: any[]) => {
+    storedValue = JSON.stringify(tokens)
+    return Promise.resolve()
+  })
+  const readTokensFromCache = jest.fn(async () => {
+    if (!storedValue) return []
+    try {
+      return JSON.parse(storedValue)
+    } catch {
+      return []
+    }
+  })
+
+  return {
+    __esModule: true,
+    default: defaultClient,
+    saveTokensToCache,
+    readTokensFromCache,
+  }
+})
+
+// Now import aggregator (it will use the mocked redis module)
 import { aggregateOnce, saveTokensToCache, readTokensFromCache } from '../src/services/aggregator'
 import redis from '../src/cache/redisClient'
 import { TokenRecord } from '../src/types'
 
-// integration-like tests for aggregator using mocked external APIs (nock)
 describe('aggregator integration (mocked APIs)', () => {
   beforeAll(() => {
     // mock dexscreener search endpoint
@@ -29,19 +74,20 @@ describe('aggregator integration (mocked APIs)', () => {
   })
 
   afterAll(async () => {
-    // remove all nock interceptors
     nock.cleanAll()
     nock.restore()
 
-    // gracefully close redis client used by the tests to avoid open handles
     try {
-      await redis.quit()
+      if (redis && typeof (redis as any).quit === 'function') {
+        await (redis as any).quit()
+      }
     } catch (e) {
-      // ignore errors on shutdown
+      // ignore
     }
     try {
-      // ensure socket/connection cleared
-      if (typeof redis.disconnect === 'function') redis.disconnect()
+      if (redis && typeof (redis as any).disconnect === 'function') {
+        ;(redis as any).disconnect()
+      }
     } catch (e) {
       // ignore
     }
@@ -52,6 +98,7 @@ describe('aggregator integration (mocked APIs)', () => {
     expect(tokens.length).toBeGreaterThanOrEqual(1)
 
     const cached = await readTokensFromCache()
+    expect(Array.isArray(cached)).toBe(true)
     expect(cached.length).toBeGreaterThanOrEqual(1)
     const found = cached.some((t) => t.token_address === 'T1' || t.token_address === 'T2')
     expect(found).toBeTruthy()
@@ -61,6 +108,7 @@ describe('aggregator integration (mocked APIs)', () => {
     const sample: TokenRecord[] = [{ token_address: 'X', token_name: 'X', last_updated: Date.now() }]
     await saveTokensToCache(sample)
     const c = await readTokensFromCache()
+    expect(Array.isArray(c)).toBe(true)
     expect(c[0].token_address).toBe('X')
   })
 })
