@@ -4,17 +4,16 @@ jest.setTimeout(20000)
 import nock from 'nock'
 nock.disableNetConnect()
 
-// Mock redis/cache module BEFORE importing aggregator so the real client never connects.
+// Mock the actual src Redis client BEFORE importing the aggregator so the real client never connects.
 // Provide __esModule: true so `import redis from '../src/cache/redisClient'` receives the mock default.
 jest.mock('../src/cache/redisClient', () => {
   // in-memory storage (string) to simulate Redis key value
   let storedValue: string | null = null
 
-  // create the default client object first so methods can reference it
+  // default client shape — includes status and connect so aggregator's guards work
   const defaultClient: any = {
-    // initial status: ready to accept commands in tests
+    // pretend to be connected by default in tests
     status: 'ready',
-    // mimic set/get behaviour
     set: jest.fn(async (_key: string, value: string) => {
       storedValue = value
       return Promise.resolve('OK')
@@ -22,17 +21,16 @@ jest.mock('../src/cache/redisClient', () => {
     get: jest.fn(async (_key: string) => {
       return Promise.resolve(storedValue)
     }),
-    // connect: set status to 'ready' and resolve
+    // connect: mark ready (useful if aggregator tries to connect)
     connect: jest.fn(async () => {
       defaultClient.status = 'ready'
       return Promise.resolve()
     }),
-    // quit/disconnect for cleanup
     quit: jest.fn(async () => Promise.resolve()),
     disconnect: jest.fn(() => undefined),
   }
 
-  // Also export helper functions in case other modules import them directly
+  // Helpful exported helpers (some modules may import these)
   const saveTokensToCache = jest.fn(async (tokens: any[]) => {
     storedValue = JSON.stringify(tokens)
     return Promise.resolve()
