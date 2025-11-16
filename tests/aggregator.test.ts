@@ -10,8 +10,11 @@ jest.mock('../src/cache/redisClient', () => {
   // in-memory storage (string) to simulate Redis key value
   let storedValue: string | null = null
 
-  // default client shape — matches code that calls redisClient.default.set / .get
-  const defaultClient = {
+  // create the default client object first so methods can reference it
+  const defaultClient: any = {
+    // initial status: ready to accept commands in tests
+    status: 'ready',
+    // mimic set/get behaviour
     set: jest.fn(async (_key: string, value: string) => {
       storedValue = value
       return Promise.resolve('OK')
@@ -19,6 +22,12 @@ jest.mock('../src/cache/redisClient', () => {
     get: jest.fn(async (_key: string) => {
       return Promise.resolve(storedValue)
     }),
+    // connect: set status to 'ready' and resolve
+    connect: jest.fn(async () => {
+      defaultClient.status = 'ready'
+      return Promise.resolve()
+    }),
+    // quit/disconnect for cleanup
     quit: jest.fn(async () => Promise.resolve()),
     disconnect: jest.fn(() => undefined),
   }

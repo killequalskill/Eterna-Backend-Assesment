@@ -16,32 +16,63 @@ const TOKENS_KEY = 'tokens:all'
 // write tokens to redis as a JSON blob with TTL
 export async function saveTokensToCache(tokens: TokenRecord[]) {
   try {
+    // defensive: if redis client isn't available or doesn't implement set, skip
+    if (!redis || typeof redis.set !== 'function') return
+
+    // if not connected, try a single connect attempt; on failure skip cache write
+    if (redis.status !== 'ready') {
+      try {
+        // attempt one connect; may throw
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        await redis.connect()
+      } catch (e: any) {
+        // eslint-disable-next-line no-console
+        console.warn('Redis connect failed, skipping cache write', e?.message ?? e)
+        return
+      }
+    }
+
     const payload = JSON.stringify(tokens)
     await redis.set(TOKENS_KEY, payload, 'EX', CACHE_TTL_SECONDS)
     log('Saved tokens to cache', tokens.length)
-  } catch (e) {
+  } catch (e: any) {
     // don't throw on cache write failure; log for debugging
     // eslint-disable-next-line no-console
-    console.error('saveTokensToCache error', e)
+    console.error('saveTokensToCache error', e?.message ?? e)
   }
 }
 
 // read cached tokens; returns [] on any error or empty cache
 export async function readTokensFromCache(): Promise<TokenRecord[]> {
   try {
+    // defensive: if redis client not present or no get method, return empty
+    if (!redis || typeof redis.get !== 'function') return []
+
+    if (redis.status !== 'ready') {
+      try {
+        // try a single connect attempt
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        await redis.connect()
+      } catch (e: any) {
+        // eslint-disable-next-line no-console
+        console.warn('Redis connect failed, returning empty cache', e?.message ?? e)
+        return []
+      }
+    }
+
     const raw = await redis.get(TOKENS_KEY)
     if (!raw) return []
     try {
       const parsed = JSON.parse(raw) as TokenRecord[]
       return parsed
-    } catch (e) {
+    } catch {
       // corrupted payload -> return empty
       return []
     }
-  } catch (e) {
+  } catch (e: any) {
     // redis error or connection closed -> return empty
     // eslint-disable-next-line no-console
-    console.error('readTokensFromCache error', e)
+    console.error('readTokensFromCache error', e?.message ?? e)
     return []
   }
 }
@@ -112,14 +143,14 @@ export async function aggregateOnce(): Promise<TokenRecord[]> {
   log('Starting aggregation once')
   try {
     const tokens = await fetchFromSources()
-    // persist what we have (even if empty)
+    // persist what we have (even if empty) - saveTokensToCache is resilient
     await saveTokensToCache(tokens)
     log('Aggregation complete', tokens.length)
     return tokens
-  } catch (e) {
+  } catch (e: any) {
     // keep aggregator resilient: log and return empty
     // eslint-disable-next-line no-console
-    console.error('aggregateOnce error', e)
+    console.error('aggregateOnce error', e?.message ?? e)
     try {
       await saveTokensToCache([])
     } catch {}
@@ -139,14 +170,14 @@ export function startAggregator(intervalSeconds?: number) {
   const interval = Math.max(5, Math.floor(intervalSeconds ?? AGGREGATOR_INTERVAL_SECONDS ?? 30))
 
   // run immediately (fire-and-forget)
-  aggregateOnce().catch((e) => {
-    log('Initial aggregation error', e)
+  aggregateOnce().catch((e: any) => {
+    log('Initial aggregation error', e?.message ?? e)
   })
 
   // schedule repeating with setInterval
   aggregatorInterval = setInterval(() => {
-    aggregateOnce().catch((e) => {
-      log('Scheduled aggregation error', e)
+    aggregateOnce().catch((e: any) => {
+      log('Scheduled aggregation error', e?.message ?? e)
     })
   }, interval * 1000)
 
