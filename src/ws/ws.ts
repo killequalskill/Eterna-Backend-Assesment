@@ -4,13 +4,12 @@ import { Server as HTTPServer } from 'http'
 import { readTokensFromCache } from '../services/aggregator'
 import { TokenRecord } from '../types'
 import debug from 'debug'
-import { CACHE_TTL_SECONDS } from '../config'
 
 const log = debug('app:ws')
 
 // thresholds for emitting updates
-const PRICE_CHANGE_PERCENT_THRESHOLD = 0.5 // percent change threshold (0.5%)
-const VOLUME_SPIKE_FACTOR = 2 // if volume increases > 2x, emit
+const PRICE_CHANGE_PERCENT_THRESHOLD = 0.5 // percent
+const VOLUME_SPIKE_FACTOR = 2 // multiplier
 
 type RoomKey = string
 
@@ -22,7 +21,7 @@ function roomKey(options: { limit?: number; sortBy?: string; period?: string }) 
   return `${sortBy}:${period}:limit=${limit}`
 }
 
-// helper to decide if price changed enough (percent)
+// helper: percent change check
 function priceChangedEnough(oldPrice?: number, newPrice?: number) {
   if (oldPrice == null || newPrice == null) return true
   if (oldPrice === 0) return true
@@ -30,14 +29,14 @@ function priceChangedEnough(oldPrice?: number, newPrice?: number) {
   return diff >= PRICE_CHANGE_PERCENT_THRESHOLD
 }
 
-// helper to decide if volume spike
+// helper: volume spike check
 function volumeSpikedEnough(oldVol?: number, newVol?: number) {
   if (oldVol == null || newVol == null) return true
   if (oldVol === 0) return newVol > 0
   return newVol >= oldVol * VOLUME_SPIKE_FACTOR
 }
 
-// token minimal payload for updates
+// minimal update payload
 function tokenDeltaPayload(t: TokenRecord) {
   return {
     token_address: t.token_address,
@@ -47,41 +46,48 @@ function tokenDeltaPayload(t: TokenRecord) {
     volume_sol: t.volume_sol,
     market_cap_sol: t.market_cap_sol,
     liquidity_sol: t.liquidity_sol,
+    price_change: (t as any).price_change ?? null,
     last_updated: t.last_updated
   }
 }
 
-// start websocket server and manage subscriptions + delta pushes
-export function startWebsocket(httpServer: HTTPServer) {
-  const io = new IOServer(httpServer, {
-    cors: { origin: '*' }
-  })
+// watch loop control
+let stopLoop = false
+let watchIntervalMs = 3000 // default 3s between checks
 
-  // last seen snapshots per room: roomKey -> Map<token_address, { price: number | undefined, volume: number | undefined, last_updated }>
+// stop the background watch loop (use in tests/teardown)
+export function stopWatchLoop() {
+  stopLoop = true
+}
+
+// start websocket server and background watcher
+export function startWebsocket(httpServer: HTTPServer) {
+  const io = new IOServer(httpServer, { cors: { origin: '*' } })
+
+  // per-room last-seen state
   const roomState = new Map<RoomKey, Map<string, { price?: number; volume?: number; last_updated?: number }>>()
 
   io.on('connection', (socket) => {
     log('client connected', socket.id)
 
     socket.on('subscribe', async (payload: { limit?: number; sortBy?: string; period?: string } = {}) => {
-      try {
-        const rk = roomKey(payload)
-        socket.join(rk)
-        // initialize room state if missing
-        if (!roomState.has(rk)) roomState.set(rk, new Map())
+      const rk = roomKey(payload)
+      socket.join(rk)
+      if (!roomState.has(rk)) roomState.set(rk, new Map())
 
-        // send snapshot page for subscription
+      // send snapshot (try/catch to avoid crash if redis temporarily unavailable)
+      try {
         const tokens = await readTokensFromCache()
         const page = tokens.slice(0, payload.limit ?? 20)
         socket.emit('snapshot', page)
 
-        // populate room state last-known values from snapshot
+        // populate room state from snapshot
         const state = roomState.get(rk)!
         for (const t of page) {
           state.set(t.token_address, { price: t.price_sol, volume: t.volume_sol, last_updated: t.last_updated })
         }
       } catch (e) {
-        socket.emit('error', 'failed to fetch snapshot')
+        socket.emit('snapshot', [])
       }
     })
 
@@ -97,52 +103,49 @@ export function startWebsocket(httpServer: HTTPServer) {
     socket.on('ping', () => socket.emit('pong'))
   })
 
-  // watch loop: poll cached tokens frequently and compute per-room diffs
+  // background watch loop: compute diffs per room and emit token_updates
   async function watchLoop() {
     try {
+      if (stopLoop) return
+
       const tokens = await readTokensFromCache()
       if (!tokens || tokens.length === 0) {
-        // nothing to do; schedule next iteration
-        setTimeout(watchLoop, 1000 * Math.max(1, Math.min(CACHE_TTL_SECONDS, 5)))
+        // no data; schedule next iteration
+        if (!stopLoop) setTimeout(watchLoop, Math.max(1000, Math.min(watchIntervalMs, 5000)))
         return
       }
 
-      // For each room, compute diffs and emit token_updates only for changed tokens
       for (const [rk, state] of roomState.entries()) {
         const updates: any[] = []
 
-        // we can apply room filtering if needed; for now use state to detect deltas against cached tokens
         for (const t of tokens) {
           const prev = state.get(t.token_address)
           const priceChanged = priceChangedEnough(prev?.price, t.price_sol)
           const volumeSpiked = volumeSpikedEnough(prev?.volume, t.volume_sol)
-
-          // only emit if either condition true and last_updated is newer
           const isNewer = !prev?.last_updated || (t.last_updated && t.last_updated > prev.last_updated)
+
           if ((priceChanged || volumeSpiked) && isNewer) {
             updates.push(tokenDeltaPayload(t))
-            // update state
             state.set(t.token_address, { price: t.price_sol, volume: t.volume_sol, last_updated: t.last_updated })
           }
         }
 
         if (updates.length) {
-          // emit to that room only
           io.to(rk).emit('token_updates', updates)
         }
       }
     } catch (e) {
-      // log error and continue
+      // log but do not crash
       // eslint-disable-next-line no-console
       console.error('ws watchLoop error', e)
     } finally {
-      // schedule next check; small interval to mimic near-realtime
-      setTimeout(watchLoop, 1000 * 3)
+      if (!stopLoop) setTimeout(watchLoop, watchIntervalMs)
     }
   }
 
-  // start the loop
-  watchLoop()
+  // start the loop (non-blocking)
+  stopLoop = false
+  setImmediate(() => watchLoop())
 
   return io
 }
